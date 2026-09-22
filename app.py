@@ -34,7 +34,7 @@ st.markdown("""
         margin-bottom: 25px;
     }
     .instruction-card h4 {
-        margin-0 0 8px 0;
+        margin: 0 0 8px 0;
         color: #a3e635;
         font-size: 1.1rem;
     }
@@ -68,7 +68,7 @@ st.markdown("""
         border-right: 1px solid #262626;
     }
     </style>
-""", unsafe_allow_allowed_html=True, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # Application Header
 st.markdown("# <span class='highlight'>RSUnits</span> Document Validator", unsafe_allow_html=True)
