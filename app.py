@@ -5,6 +5,7 @@ from PIL import Image
 from google.cloud import storage
 from google.oauth2 import service_account
 import datetime
+import json
 
 # Page Configuration
 st.set_page_config(page_title="RSUnits | Document Upload", layout="centered", page_icon="📈")
@@ -50,8 +51,8 @@ st.markdown("""
 MAX_FILE_SIZE_MB = 20
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
-# Helper function to upload to GCS
-def upload_to_gcs(file_obj, blob_name):
+# Helper function to upload files or raw data to GCS
+def upload_to_gcs(file_obj_or_bytes, blob_name, content_type="application/octet-stream"):
     try:
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"]
@@ -60,8 +61,13 @@ def upload_to_gcs(file_obj, blob_name):
         bucket_name = st.secrets.get("GCS_BUCKET_NAME", "rsunits_uploads")
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-        file_obj.seek(0)
-        blob.upload_from_file(file_obj, content_type=file_obj.type)
+        
+        if hasattr(file_obj_or_bytes, 'seek'):
+            file_obj_or_bytes.seek(0)
+            blob.upload_from_file(file_obj_or_bytes, content_type=content_type)
+        else:
+            blob.upload_from_string(file_obj_or_bytes, content_type=content_type)
+            
         return True
     except Exception as e:
         st.error(f"Failed to upload {blob_name} to GCS: {e}")
@@ -130,8 +136,8 @@ if st.button("Submit & Validate Documents"):
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # Save files to Google Cloud Storage
-            rsu_uploaded = upload_to_gcs(rsu_file, f"applicants/{applicant_id}/{timestamp}_rsu_{rsu_file.name}")
-            paystub_uploaded = upload_to_gcs(paystub_file, f"applicants/{applicant_id}/{timestamp}_paystub_{paystub_file.name}")
+            rsu_uploaded = upload_to_gcs(rsu_file, f"applicants/{applicant_id}/{timestamp}_rsu_{rsu_file.name}", content_type=rsu_file.type)
+            paystub_uploaded = upload_to_gcs(paystub_file, f"applicants/{applicant_id}/{timestamp}_paystub_{paystub_file.name}", content_type=paystub_file.type)
             
             if rsu_uploaded and paystub_uploaded:
                 try:
@@ -142,26 +148,68 @@ if st.button("Submit & Validate Documents"):
 
                     prompt = (
                         "You are an automated underwriting document validator for RSUnits.\n"
-                        "Analyze the provided document(s) and extract key verification data:\n\n"
-                        "For RSU Statement:\n"
-                        "- Total Shares / Grant Amounts\n"
-                        "- Next Scheduled Vesting Dates & Amounts\n"
-                        "- Brokerage / Platform Name\n\n"
-                        "For Paystub:\n"
-                        "- Employer Name\n"
-                        "- Gross and Net Pay\n"
-                        "- Pay Period Dates\n\n"
-                        "Provide a clear, structured summary verifying if both documents meet prequalification criteria."
+                        "Analyze the provided RSU Statement and Paystub documents.\n"
+                        "Extract the required details and output exclusively valid JSON with this exact structure:\n"
+                        "{\n"
+                        '  "rsu_details": {\n'
+                        '    "brokerage_platform": "string or null",\n'
+                        '    "total_unvested_shares": "string or null",\n'
+                        '    "next_vest_date": "YYYY-MM-DD or null",\n'
+                        '    "next_vest_amount": "string or null"\n'
+                        '  },\n'
+                        '  "paystub_details": {\n'
+                        '    "employer_name": "string or null",\n'
+                        '    "gross_pay_period": "string or null",\n'
+                        '    "net_pay_period": "string or null",\n'
+                        '    "pay_period_dates": "string or null"\n'
+                        '  },\n'
+                        '  "prequalification_flags": {\n'
+                        '    "documents_legible": true,\n'
+                        '    "employer_match_verified": true,\n'
+                        '    "underwriter_notes": "string summary"\n'
+                        '  }\n'
+                        "}"
                     )
 
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=[rsu_part, paystub_part, prompt]
+                        model="gemini-2.0-flash",
+                        contents=[rsu_part, paystub_part, prompt],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json"
+                        )
                     )
 
+                    # Save extracted JSON summary to GCS alongside documents
+                    json_summary_name = f"applicants/{applicant_id}/{timestamp}_underwriting_summary.json"
+                    upload_to_gcs(response.text, json_summary_name, content_type="application/json")
+
+                    parsed_json = json.loads(response.text)
+
                     st.success("Documents successfully saved to Cloud Storage and verified!")
+                    
+                    # Clean UI rendering of extracted verification fields
                     st.markdown("### Verification Summary")
-                    st.write(response.text)
+                    
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown("**RSU Statement Metrics**")
+                        rsu_info = parsed_json.get("rsu_details", {})
+                        st.write(f"- **Brokerage:** {rsu_info.get('brokerage_platform', 'N/A')}")
+                        st.write(f"- **Unvested Shares:** {rsu_info.get('total_unvested_shares', 'N/A')}")
+                        st.write(f"- **Next Vest Date:** {rsu_info.get('next_vest_date', 'N/A')}")
+                        st.write(f"- **Next Vest Amount:** {rsu_info.get('next_vest_amount', 'N/A')}")
+
+                    with col_b:
+                        st.markdown("**Paystub Metrics**")
+                        pay_info = parsed_json.get("paystub_details", {})
+                        st.write(f"- **Employer:** {pay_info.get('employer_name', 'N/A')}")
+                        st.write(f"- **Gross Pay:** {pay_info.get('gross_pay_period', 'N/A')}")
+                        st.write(f"- **Net Pay:** {pay_info.get('net_pay_period', 'N/A')}")
+                        st.write(f"- **Period:** {pay_info.get('pay_period_dates', 'N/A')}")
+
+                    flags = parsed_json.get("prequalification_flags", {})
+                    st.info(f"**Underwriting Note:** {flags.get('underwriter_notes', 'Documents received and logged.')}")
 
                 except Exception as e:
                     st.error(f"Processing error: {e}")
+
