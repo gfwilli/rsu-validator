@@ -95,7 +95,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Uploaders (Updated to accept PDF, PNG, JPG, JPEG)
+# Uploaders (PNG, JPG, JPEG, PDF)
 allowed_types = ["png", "jpg", "jpeg", "pdf"]
 rsu_file = st.file_uploader("1. Upload RSU Statement / Vesting Schedule", type=allowed_types)
 paystub_file = st.file_uploader("2. Upload Most Recent Paystub", type=allowed_types)
@@ -107,14 +107,14 @@ if rsu_file:
         if rsu_file.type == "application/pdf":
             st.info(f"📄 RSU Statement PDF attached ({rsu_file.name})")
         else:
-            st.image(Image.open(rsu_file), caption="RSU Statement Preview", use_column_width=True)
+            st.image(Image.open(rsu_file), caption="RSU Statement Preview", use_container_width=True)
 
 if paystub_file:
     with col2:
         if paystub_file.type == "application/pdf":
             st.info(f"📄 Paystub PDF attached ({paystub_file.name})")
         else:
-            st.image(Image.open(paystub_file), caption="Paystub Preview", use_column_width=True)
+            st.image(Image.open(paystub_file), caption="Paystub Preview", use_container_width=True)
 
 if st.button("Submit & Validate Documents"):
     api_key = st.secrets.get("GEMINI_API_KEY")
@@ -165,4 +165,3 @@ if st.button("Submit & Validate Documents"):
 
                 except Exception as e:
                     st.error(f"Processing error: {e}")
-
