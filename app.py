@@ -193,7 +193,7 @@ if st.button("Submit & Validate Documents"):
                     )
 
                     response = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model="gemini-2.5-flash",
                         contents=[id_part, rsu_part, paystub_part, prompt],
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json"
