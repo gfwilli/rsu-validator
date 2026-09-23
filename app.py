@@ -1,5 +1,6 @@
 import streamlit as st
 import google.genai as genai
+from google.genai import types
 from PIL import Image
 from google.cloud import storage
 from google.oauth2 import service_account
@@ -46,6 +47,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+MAX_FILE_SIZE_MB = 20
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
 # Helper function to upload to GCS
 def upload_to_gcs(file_obj, blob_name):
     try:
@@ -63,10 +67,16 @@ def upload_to_gcs(file_obj, blob_name):
         st.error(f"Failed to upload {blob_name} to GCS: {e}")
         return False
 
+# Helper function to convert uploaded files for Gemini
+def prepare_part_for_gemini(uploaded_file):
+    uploaded_file.seek(0)
+    bytes_data = uploaded_file.read()
+    return types.Part.from_bytes(data=bytes_data, mime_type=uploaded_file.type)
+
 # Header
 st.markdown("# <span class='highlight'>RSUnits</span> Verification Upload", unsafe_allow_html=True)
 
-# Capture URL Parameters (e.g. ?applicant_id=123)
+# Capture URL Parameters
 query_params = st.query_params
 applicant_id = query_params.get("applicant_id", "anonymous")
 
@@ -77,7 +87,7 @@ if applicant_id != "anonymous":
 st.markdown("""
 <div class="instruction-card">
     <h4>📋 Required Verification Documents</h4>
-    <p>To finalize your prequalification review, please upload both required verification documents below:</p>
+    <p>To finalize your prequalification review, please upload both required verification documents below (Max 20MB per file; PNG, JPG, or PDF):</p>
     <ul>
         <li><b>1. Most Recent RSU Details:</b> Must show total share counts, upcoming vest dates, and current market value.</li>
         <li><b>2. Most Recent Paystub:</b> Must show gross earnings, deductions, and employer name.</li>
@@ -85,17 +95,26 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Uploaders
-rsu_file = st.file_uploader("1. Upload RSU Statement / Vesting Schedule", type=["png", "jpg", "jpeg"])
-paystub_file = st.file_uploader("2. Upload Most Recent Paystub", type=["png", "jpg", "jpeg"])
+# Uploaders (Updated to accept PDF, PNG, JPG, JPEG)
+allowed_types = ["png", "jpg", "jpeg", "pdf"]
+rsu_file = st.file_uploader("1. Upload RSU Statement / Vesting Schedule", type=allowed_types)
+paystub_file = st.file_uploader("2. Upload Most Recent Paystub", type=allowed_types)
 
+# Previews
 col1, col2 = st.columns(2)
 if rsu_file:
     with col1:
-        st.image(Image.open(rsu_file), caption="RSU Statement Preview", use_column_width=True)
+        if rsu_file.type == "application/pdf":
+            st.info(f"📄 RSU Statement PDF attached ({rsu_file.name})")
+        else:
+            st.image(Image.open(rsu_file), caption="RSU Statement Preview", use_column_width=True)
+
 if paystub_file:
     with col2:
-        st.image(Image.open(paystub_file), caption="Paystub Preview", use_column_width=True)
+        if paystub_file.type == "application/pdf":
+            st.info(f"📄 Paystub PDF attached ({paystub_file.name})")
+        else:
+            st.image(Image.open(paystub_file), caption="Paystub Preview", use_column_width=True)
 
 if st.button("Submit & Validate Documents"):
     api_key = st.secrets.get("GEMINI_API_KEY")
@@ -104,6 +123,8 @@ if st.button("Submit & Validate Documents"):
         st.error("System configuration error: Missing Gemini API Key.")
     elif not rsu_file or not paystub_file:
         st.warning("Please upload both your RSU statement and your paystub before submitting.")
+    elif rsu_file.size > MAX_FILE_SIZE_BYTES or paystub_file.size > MAX_FILE_SIZE_BYTES:
+        st.error(f"One or both files exceed the maximum size limit of {MAX_FILE_SIZE_MB}MB. Please select smaller files.")
     else:
         with st.spinner("Uploading documents to storage and running AI validation..."):
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -115,12 +136,13 @@ if st.button("Submit & Validate Documents"):
             if rsu_uploaded and paystub_uploaded:
                 try:
                     client = genai.Client(api_key=api_key)
-                    rsu_img = Image.open(rsu_file)
-                    paystub_img = Image.open(paystub_file)
+                    
+                    rsu_part = prepare_part_for_gemini(rsu_file)
+                    paystub_part = prepare_part_for_gemini(paystub_file)
 
                     prompt = (
                         "You are an automated underwriting document validator for RSUnits.\n"
-                        "Analyze the provided image(s) and extract key verification data:\n\n"
+                        "Analyze the provided document(s) and extract key verification data:\n\n"
                         "For RSU Statement:\n"
                         "- Total Shares / Grant Amounts\n"
                         "- Next Scheduled Vesting Dates & Amounts\n"
@@ -134,7 +156,7 @@ if st.button("Submit & Validate Documents"):
 
                     response = client.models.generate_content(
                         model="gemini-2.5-flash",
-                        contents=[rsu_img, paystub_img, prompt]
+                        contents=[rsu_part, paystub_part, prompt]
                     )
 
                     st.success("Documents successfully saved to Cloud Storage and verified!")
@@ -143,3 +165,4 @@ if st.button("Submit & Validate Documents"):
 
                 except Exception as e:
                     st.error(f"Processing error: {e}")
+
